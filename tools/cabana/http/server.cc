@@ -1,5 +1,7 @@
 #include "tools/cabana/http/server.h"
 
+#include <algorithm>
+
 #include <QHostAddress>
 #include <QJsonArray>
 #include <QJsonDocument>
