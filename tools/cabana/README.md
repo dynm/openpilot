@@ -98,3 +98,30 @@ cabana
 ## Additional Information
 
 For more information, see the [openpilot wiki](https://github.com/commaai/openpilot/wiki/Cabana)
+
+
+## HTTP API for agent control
+
+Cabana now exposes a local HTTP API for agent-driven workflows (reading decoded values, updating in-memory DBC signals, and plotting charts).
+
+- Default endpoint: `http://127.0.0.1:8989`
+- Port override: `CABANA_HTTP_PORT=<port> cabana ...`
+
+### API endpoints
+
+- `GET /health`
+- `GET /api/messages?source=<bus>`
+- `GET /api/signals/value?source=<bus>&address=<0xaddr>&signal=<name>`
+- `POST /api/dbc/signal`
+- `POST /api/charts/show`
+
+### Agent helper + skill
+
+- Helper script: `tools/cabana/http/agent_client.py`
+- Skill definition: `tools/cabana/skills/cabana-http-agent/SKILL.md`
+
+Example helper invocation:
+
+```bash
+python3 tools/cabana/http/agent_client.py --source 0 --top-n 5 --show
+```

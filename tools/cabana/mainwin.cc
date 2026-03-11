@@ -22,6 +22,7 @@
 
 #include "tools/cabana/commands.h"
 #include "tools/cabana/streamselector.h"
+#include "tools/cabana/http/server.h"
 #include "tools/cabana/tools/findsignal.h"
 #include "tools/cabana/utils/export.h"
 
@@ -32,6 +33,7 @@ MainWindow::MainWindow(AbstractStream *stream, const QString &dbc_file) : QMainW
   createActions();
   createStatusBar();
   createShortcuts();
+  http_server_ = std::make_unique<CabanaHttpServer>(this);
 
   // save default window state to allow resetting it
   default_state = saveState();

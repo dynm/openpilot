@@ -7,6 +7,7 @@
 #include <QProgressBar>
 #include <QSplitter>
 #include <QStatusBar>
+#include <memory>
 #include <set>
 
 #include "tools/cabana/chart/chartswidget.h"
@@ -15,6 +16,7 @@
 #include "tools/cabana/messageswidget.h"
 #include "tools/cabana/videowidget.h"
 #include "tools/cabana/tools/findsimilarbits.h"
+#include "tools/cabana/http/server.h"
 
 class MainWindow : public QMainWindow {
   Q_OBJECT
@@ -99,6 +101,7 @@ protected:
   QAction *copy_dbc_to_clipboard = nullptr;
   QString car_fingerprint;
   QByteArray default_state;
+  std::unique_ptr<CabanaHttpServer> http_server_;
 };
 
 class HelpOverlay : public QWidget {
