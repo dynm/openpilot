@@ -297,7 +297,7 @@ void ChartsWidget::showChart(const MessageId &id, const cabana::Signal *sig, boo
     chart->addSignal(id, sig);
     updateState();
   } else if (!show && chart) {
-    chart->removeIf([&](auto &s) { return s.msg_id == id && s.sig == sig; });
+    chart->removeIf([&](auto &s) { return s.msg_id == id && sig && s.sig_name == sig->name; });
   }
 }
 
@@ -309,7 +309,9 @@ void ChartsWidget::splitChart(ChartView *src_chart) {
       src_chart->chart()->removeSeries(it->series);
 
       // Restore to the original color
-      it->series->setColor(it->sig->color);
+      if (auto sig = src_chart->resolveSignal(*it)) {
+        it->series->setColor(sig->color);
+      }
 
       c->addSeries(it->series);
       c->sigs.emplace_back(std::move(*it));
@@ -328,7 +330,7 @@ QStringList ChartsWidget::serializeChartIds() const {
   for (auto c : charts) {
     QStringList ids;
     for (const auto& s : c->sigs)
-      ids += QString("%1|%2").arg(QString::fromStdString(s.msg_id.toString()), QString::fromStdString(s.sig->name));
+      ids += QString("%1|%2").arg(QString::fromStdString(s.msg_id.toString()), QString::fromStdString(s.sig_name));
     chart_ids += ids.join(',');
   }
   std::reverse(chart_ids.begin(), chart_ids.end());

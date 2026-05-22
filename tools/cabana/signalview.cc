@@ -90,6 +90,9 @@ Qt::ItemFlags SignalModel::flags(const QModelIndex &index) const {
   if (index.column() == 1  && item->children.empty()) {
     flags |= (item->type == Item::Endian || item->type == Item::Signed) ? Qt::ItemIsUserCheckable : Qt::ItemIsEditable;
   }
+  if (can && can->demuxCycleBase(msg_id) >= 0 && (item->type == Item::SignalType || item->type == Item::MultiplexValue)) {
+    flags &= ~(Qt::ItemIsEditable | Qt::ItemIsEnabled);
+  }
   if (item->type == Item::MultiplexValue && item->sig->type != cabana::Signal::Type::Multiplexed) {
     flags &= ~Qt::ItemIsEnabled;
   }
@@ -160,9 +163,14 @@ QVariant SignalModel::data(const QModelIndex &index, int role) const {
 }
 
 bool SignalModel::setData(const QModelIndex &index, const QVariant &value, int role) {
-  if (role != Qt::EditRole && role != Qt::CheckStateRole) return false;
+  if (!index.isValid() || (role != Qt::EditRole && role != Qt::CheckStateRole)) return false;
 
   Item *item = getItem(index);
+  if (!item || !item->sig) return false;
+  if (can && can->demuxCycleBase(msg_id) >= 0 && (item->type == Item::SignalType || item->type == Item::MultiplexValue)) {
+    return false;
+  }
+
   cabana::Signal s = *item->sig;
   switch (item->type) {
     case Item::Name: s.name = value.toString().toStdString(); break;
@@ -181,9 +189,7 @@ bool SignalModel::setData(const QModelIndex &index, const QVariant &value, int r
     case Item::Desc: s.val_desc = value.value<ValueDescription>(); break;
     default: return false;
   }
-  bool ret = saveSignal(item->sig, s);
-  emit dataChanged(index, index, {Qt::DisplayRole, Qt::EditRole, Qt::CheckStateRole});
-  return ret;
+  return saveSignal(item->sig, s);
 }
 
 bool SignalModel::saveSignal(const cabana::Signal *origin_s, cabana::Signal &s) {
@@ -202,15 +208,20 @@ bool SignalModel::saveSignal(const cabana::Signal *origin_s, cabana::Signal &s) 
 }
 
 void SignalModel::handleMsgChanged(MessageId id) {
-  if (id.address == msg_id.address) {
+  if (id.address == msg_id.address || (can && id == can->demuxSourceId(msg_id))) {
     refresh();
   }
 }
 
 void SignalModel::handleSignalAdded(MessageId id, const cabana::Signal *sig) {
-  if (id == msg_id) {
+  if (id == msg_id || (can && id == can->demuxSourceId(msg_id))) {
     if (filter_str.isEmpty()) {
-      int i = dbc()->msg(msg_id)->indexOf(sig);
+      auto msg = dbc()->msg(msg_id);
+      int i = msg ? msg->indexOf(sig) : -1;
+      if (i < 0) {
+        refresh();
+        return;
+      }
       beginInsertRows({}, i, i);
       insertItem(root.get(), i, sig);
       endInsertRows();
@@ -234,6 +245,11 @@ void SignalModel::handleSignalUpdated(const cabana::Signal *sig) {
         root->children.insert(root->children.begin() + to, item);
         endMoveRows();
       }
+    }
+  } else if (can) {
+    auto source_msg = dbc()->msg(can->demuxSourceId(msg_id));
+    if (source_msg && source_msg->indexOf(sig) != -1) {
+      refresh();
     }
   }
 }
@@ -524,9 +540,22 @@ void SignalView::rowsChanged() {
 
       tree->setIndexWidget(index, w);
       auto sig = model->getItem(index)->sig;
-      QObject::connect(remove_btn, &QToolButton::clicked, [=]() { UndoStack::push(new RemoveSigCommand(model->msg_id, sig)); });
+      std::string sig_name = sig->name;
+      const bool demux_multiplexor = can && can->demuxCycleBase(model->msg_id) >= 0 && sig->type == cabana::Signal::Type::Multiplexor;
+      remove_btn->setEnabled(!demux_multiplexor);
+      QObject::connect(remove_btn, &QToolButton::clicked, [=]() {
+        if (auto msg = dbc()->msg(model->msg_id)) {
+          if (auto current_sig = msg->sig(sig_name)) {
+            UndoStack::push(new RemoveSigCommand(model->msg_id, current_sig));
+          }
+        }
+      });
       QObject::connect(plot_btn, &QToolButton::clicked, [=](bool checked) {
-        emit showChart(model->msg_id, sig, checked, QGuiApplication::keyboardModifiers() & Qt::ShiftModifier);
+        if (auto msg = dbc()->msg(model->msg_id)) {
+          if (auto current_sig = msg->sig(sig_name)) {
+            emit showChart(model->msg_id, current_sig, checked, QGuiApplication::keyboardModifiers() & Qt::ShiftModifier);
+          }
+        }
       });
     }
   }

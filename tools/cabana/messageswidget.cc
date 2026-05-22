@@ -4,11 +4,14 @@
 #include <utility>
 
 #include <QCheckBox>
+#include <QComboBox>
 #include <QHBoxLayout>
+#include <QLabel>
 #include <QPainter>
 #include <QPalette>
 #include <QPushButton>
 #include <QScrollBar>
+#include <QSignalBlocker>
 #include <QVBoxLayout>
 
 #include "tools/cabana/commands.h"
@@ -30,6 +33,7 @@ MessagesWidget::MessagesWidget(QWidget *parent) : menu(new QMenu(this)), QWidget
   view->setItemsExpandable(false);
   view->setIndentation(0);
   view->setRootIsDecorated(false);
+  view->setContextMenuPolicy(Qt::CustomContextMenu);
 
   // Must be called before setting any header parameters to avoid overriding
   restoreHeaderState(settings.message_header_state);
@@ -41,6 +45,7 @@ MessagesWidget::MessagesWidget(QWidget *parent) : menu(new QMenu(this)), QWidget
   // signals/slots
   QObject::connect(menu, &QMenu::aboutToShow, this, &MessagesWidget::menuAboutToShow);
   QObject::connect(header, &MessageViewHeader::customContextMenuRequested, this, &MessagesWidget::headerContextMenuEvent);
+  QObject::connect(view, &MessageView::customContextMenuRequested, this, &MessagesWidget::messageContextMenuEvent);
   QObject::connect(view->horizontalScrollBar(), &QScrollBar::valueChanged, header, &MessageViewHeader::updateHeaderPositions);
   QObject::connect(can, &AbstractStream::msgsReceived, model, &MessageListModel::msgsReceived);
   QObject::connect(dbc(), &DBCManager::DBCFileChanged, model, &MessageListModel::dbcModified);
@@ -54,11 +59,18 @@ MessagesWidget::MessagesWidget(QWidget *parent) : menu(new QMenu(this)), QWidget
   });
   QObject::connect(view->selectionModel(), &QItemSelectionModel::currentChanged, [=](const QModelIndex &current, const QModelIndex &previous) {
     if (current.isValid() && current.row() < model->items_.size()) {
-      const auto &id = model->items_[current.row()].id;
+      const auto &item = model->items_[current.row()];
+      const auto &id = item.id;
+      const int repetition = can->demuxRepetition(id);
+      const int cycle_base = can->demuxCycleBase(id);
+      model->setSelectedCycleRepetition(repetition);
+      QSignalBlocker blocker(demux_combo);
+      demux_combo->setCurrentText(QString::number(repetition));
       if (!current_msg_id || id != *current_msg_id) {
         current_msg_id = id;
         emit msgSelectionChanged(*current_msg_id);
       }
+      emit demuxSelectionChanged(repetition, cycle_base, repetition > 1 && cycle_base >= 0);
     }
   });
 
@@ -82,6 +94,12 @@ QWidget *MessagesWidget::createToolBar() {
   layout->addWidget(suppress_clear = new QPushButton());
   suppress_clear->setToolTip(tr("Clear suppressed"));
   layout->addStretch(1);
+  layout->addWidget(new QLabel(tr("Demux:"), this));
+  demux_combo = new QComboBox(this);
+  demux_combo->addItems({"1", "2", "4", "8", "16", "32"});
+  demux_combo->setCurrentText("1");
+  demux_combo->setToolTip(tr("Apply demux to the selected address"));
+  layout->addWidget(demux_combo);
   QCheckBox *suppress_defined_signals = new QCheckBox(tr("Suppress Signals"), this);
   suppress_defined_signals->setToolTip(tr("Suppress defined signals"));
   suppress_defined_signals->setChecked(settings.suppress_defined_signals);
@@ -96,6 +114,29 @@ QWidget *MessagesWidget::createToolBar() {
   QObject::connect(suppress_add, &QPushButton::clicked, this, &MessagesWidget::suppressHighlighted);
   QObject::connect(suppress_clear, &QPushButton::clicked, this, &MessagesWidget::suppressHighlighted);
   QObject::connect(suppress_defined_signals, &QCheckBox::stateChanged, can, &AbstractStream::suppressDefinedSignals);
+  QObject::connect(demux_combo, &QComboBox::currentTextChanged, this, [this](const QString &txt) {
+    bool ok = false;
+    int repetition = txt.toInt(&ok);
+    QModelIndex current = view->currentIndex();
+    if (!ok || repetition <= 0 || !current.isValid() || current.row() >= model->items_.size()) return;
+
+    const auto item = model->items_[current.row()];
+    if (item.id.source == INVALID_SOURCE) return;
+
+    const MessageId source_id = can->demuxSourceId(item.id);
+    const int old_cycle = can->demuxCycleBase(item.id);
+    can->setDemuxRepetition(source_id, repetition);
+    model->setSelectedCycleRepetition(repetition);
+
+    const int target_cycle = repetition > 1 ? std::clamp(std::max(old_cycle, 0), 0, repetition - 1) : -1;
+    const MessageId target_id = repetition > 1 ? can->demuxMessageId(source_id, target_cycle) : source_id;
+    auto it = std::find_if(model->items_.cbegin(), model->items_.cend(), [&](const auto &candidate) {
+      return candidate.id == target_id;
+    });
+    if (it != model->items_.cend()) {
+      view->setCurrentIndex(model->index(std::distance(model->items_.cbegin(), it), 0));
+    }
+  });
 
   suppressHighlighted();
   return toolbar;
@@ -128,6 +169,42 @@ void MessagesWidget::suppressHighlighted() {
 
 void MessagesWidget::headerContextMenuEvent(const QPoint &pos) {
   menu->exec(header->mapToGlobal(pos));
+}
+
+void MessagesWidget::messageContextMenuEvent(const QPoint &pos) {
+  QModelIndex index = view->indexAt(pos);
+  if (!index.isValid() || index.row() >= model->items_.size()) return;
+
+  const auto item = model->items_[index.row()];
+  if (item.id.source == INVALID_SOURCE || index.column() != MessageListModel::Column::ADDRESS) return;
+
+  view->setCurrentIndex(model->index(index.row(), 0));
+
+  QMenu context_menu(this);
+  QMenu *demux_menu = context_menu.addMenu(tr("Demux"));
+  const MessageId source_id = can->demuxSourceId(item.id);
+  const int current_repetition = can->demuxRepetition(source_id);
+  const int old_cycle = can->demuxCycleBase(item.id);
+  for (int repetition : {1, 2, 4, 8, 16, 32}) {
+    QAction *action = demux_menu->addAction(QString::number(repetition));
+    action->setCheckable(true);
+    action->setChecked(repetition == current_repetition);
+    QObject::connect(action, &QAction::triggered, this, [this, source_id, old_cycle, repetition]() {
+      can->setDemuxRepetition(source_id, repetition);
+      model->setSelectedCycleRepetition(repetition);
+
+      int target_cycle = repetition > 1 ? std::clamp(std::max(old_cycle, 0), 0, repetition - 1) : -1;
+      const MessageId target_id = repetition > 1 ? can->demuxMessageId(source_id, target_cycle) : source_id;
+      auto it = std::find_if(model->items_.cbegin(), model->items_.cend(), [&](const auto &candidate) {
+        return candidate.id == target_id;
+      });
+      if (it != model->items_.cend()) {
+        view->setCurrentIndex(model->index(std::distance(model->items_.cbegin(), it), 0));
+      }
+    });
+  }
+
+  context_menu.exec(view->viewport()->mapToGlobal(pos));
 }
 
 void MessagesWidget::menuAboutToShow() {
@@ -192,7 +269,16 @@ QVariant MessageListModel::data(const QModelIndex &index, int role) const {
     switch (index.column()) {
       case Column::NAME: return item.name;
       case Column::SOURCE: return item.id.source != INVALID_SOURCE ? QString::number(item.id.source) : NA;
-      case Column::ADDRESS: return toHexString(item.id.address);
+      case Column::ADDRESS: {
+        if (item.id.source != INVALID_SOURCE) {
+          int repetition = can->demuxRepetition(item.id);
+          int cycle_base = can->demuxCycleBase(item.id);
+          if (repetition > 1 && cycle_base >= 0) {
+            return QString("%1[%2]").arg(toHexString(can->demuxSourceId(item.id).address), QString::number(cycle_base));
+          }
+        }
+        return toHexString(item.id.address);
+      }
       case Column::NODE: return item.node;
       case Column::FREQ: return item.id.source != INVALID_SOURCE ? getFreq(can->lastMessage(item.id).freq) : NA;
       case Column::COUNT: return item.id.source != INVALID_SOURCE ? QString::number(can->lastMessage(item.id).count) : NA;
@@ -230,11 +316,17 @@ void MessageListModel::dbcModified() {
 }
 
 void MessageListModel::sortItems(std::vector<MessageListModel::Item> &items) {
-  auto compare = [this](const auto &l, const auto &r) {
+  auto effectiveAddress = [](const Item &it) {
+    const MessageId source_id = can->demuxSourceId(it.id);
+    const int cycle_base = can->demuxCycleBase(it.id);
+    return std::make_tuple(source_id.address, cycle_base < 0 ? -1 : cycle_base, it.id.address);
+  };
+
+  auto compare = [this, &effectiveAddress](const auto &l, const auto &r) {
     switch (sort_column) {
       case Column::NAME: return std::tie(l.name, l.id) < std::tie(r.name, r.id);
-      case Column::SOURCE: return std::tie(l.id.source, l.id.address) < std::tie(r.id.source, r.id.address);
-      case Column::ADDRESS: return std::tie(l.id.address, l.id.source) < std::tie(r.id.address, r.id.source);
+      case Column::SOURCE: return std::make_tuple(l.id.source, effectiveAddress(l)) < std::make_tuple(r.id.source, effectiveAddress(r));
+      case Column::ADDRESS: return std::make_tuple(effectiveAddress(l), l.id.source) < std::make_tuple(effectiveAddress(r), r.id.source);
       case Column::NODE: return std::tie(l.node, l.id) < std::tie(r.node, r.id);
       case Column::FREQ: return std::tie(can->lastMessage(l.id).freq, l.id) < std::tie(can->lastMessage(r.id).freq, r.id);
       case Column::COUNT: return std::tie(can->lastMessage(l.id).count, l.id) < std::tie(can->lastMessage(r.id).count, r.id);
@@ -284,10 +376,12 @@ bool MessageListModel::match(const MessageListModel::Item &item) {
       case Column::SOURCE:
         match = parseRange(txt, item.id.source);
         break;
-      case Column::ADDRESS:
-        match = toHexString(item.id.address).contains(txt, Qt::CaseInsensitive);
-        match = match || parseRange(txt, item.id.address, 16);
+      case Column::ADDRESS: {
+        uint32_t addr = can->demuxSourceId(item.id).address;
+        match = toHexString(addr).contains(txt, Qt::CaseInsensitive);
+        match = match || parseRange(txt, addr, 16);
         break;
+      }
       case Column::NODE:
         match = item.node.contains(txt, Qt::CaseInsensitive);
         break;
@@ -324,7 +418,8 @@ bool MessageListModel::filterAndSort() {
       auto msg = dbc()->msg(id);
       Item item = {.id = id,
                   .name = msg ? QString::fromStdString(msg->name) : QString::fromStdString(UNTITLED),
-                  .node = msg ? QString::fromStdString(msg->transmitter) : QString()};
+                  .node = msg ? QString::fromStdString(msg->transmitter) : QString(),
+                  .cycle_base = can->demuxCycleBase(id)};
       if (match(item))
         items.emplace_back(item);
     }

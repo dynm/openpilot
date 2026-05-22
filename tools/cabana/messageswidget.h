@@ -6,6 +6,7 @@
 #include <vector>
 
 #include <QAbstractTableModel>
+#include <QComboBox>
 #include <QHeaderView>
 #include <QLineEdit>
 #include <QMenu>
@@ -40,13 +41,16 @@ public:
   void msgsReceived(const std::set<MessageId> *new_msgs, bool has_new_ids);
   bool filterAndSort();
   void dbcModified();
+  int getCycleRepetition() const { return selected_repetition_; }
+  void setSelectedCycleRepetition(int repetition) { selected_repetition_ = std::max(1, repetition); }
 
   struct Item {
     MessageId id;
     QString name;
     QString node;
+    int cycle_base = -1;
     bool operator==(const Item &other) const {
-      return id == other.id && name == other.name && node == other.node;
+      return id == other.id && name == other.name && node == other.node && cycle_base == other.cycle_base;
     }
   };
   std::vector<Item> items_;
@@ -61,6 +65,7 @@ private:
   int sort_column = 0;
   Qt::SortOrder sort_order = Qt::AscendingOrder;
   int sort_threshold_ = 0;
+  int selected_repetition_ = 1;
 };
 
 class MessageView : public QTreeView {
@@ -98,14 +103,17 @@ public:
   QByteArray saveHeaderState() const { return view->header()->saveState(); }
   bool restoreHeaderState(const QByteArray &state) const { return view->header()->restoreState(state); }
   void suppressHighlighted();
+  int currentCycleRepetition() const { return model ? model->getCycleRepetition() : 1; }
 
 signals:
   void msgSelectionChanged(const MessageId &message_id);
+  void demuxSelectionChanged(int repetition, int cycle_base, bool enabled);
   void titleChanged(const QString &title);
 
 protected:
   QWidget *createToolBar();
   void headerContextMenuEvent(const QPoint &pos);
+  void messageContextMenuEvent(const QPoint &pos);
   void menuAboutToShow();
   void setMultiLineBytes(bool multi);
   void updateTitle();
@@ -115,6 +123,7 @@ protected:
   MessageBytesDelegate *delegate;
   std::optional<MessageId> current_msg_id;
   MessageListModel *model;
+  QComboBox *demux_combo;
   QPushButton *suppress_add;
   QPushButton *suppress_clear;
   QMenu *menu;

@@ -103,6 +103,17 @@ QSize ChartView::sizeHint() const {
   return {CHART_MIN_WIDTH, settings.chart_height};
 }
 
+const cabana::Signal *ChartView::resolveSignal(SigItem &s) {
+  if (auto msg = dbc()->msg(s.msg_id)) {
+    if (auto sig = msg->sig(s.sig_name)) {
+      s.sig = sig;
+      return sig;
+    }
+  }
+  s.sig = nullptr;
+  return nullptr;
+}
+
 void ChartView::setTheme(QChart::ChartTheme theme) {
   chart()->setTheme(theme);
   if (theme == QChart::ChartThemeDark) {
@@ -115,7 +126,9 @@ void ChartView::setTheme(QChart::ChartTheme theme) {
   axis_x->setLineVisible(false);
   axis_y->setLineVisible(false);
   for (auto &s : sigs) {
-    s.series->setColor(s.sig->color);
+    if (auto sig = resolveSignal(s)) {
+      s.series->setColor(sig->color);
+    }
   }
 }
 
@@ -123,7 +136,7 @@ void ChartView::addSignal(const MessageId &msg_id, const cabana::Signal *sig) {
   if (hasSignal(msg_id, sig)) return;
 
   QXYSeries *series = createSeries(series_type, sig->color);
-  sigs.push_back({.msg_id = msg_id, .sig = sig, .series = series});
+  sigs.push_back({.msg_id = msg_id, .sig = sig, .sig_name = sig->name, .series = series});
   updateSeries(sig);
   updateSeriesPoints();
   updateTitle();
@@ -131,7 +144,7 @@ void ChartView::addSignal(const MessageId &msg_id, const cabana::Signal *sig) {
 }
 
 bool ChartView::hasSignal(const MessageId &msg_id, const cabana::Signal *sig) const {
-  return std::any_of(sigs.cbegin(), sigs.cend(), [&](auto &s) { return s.msg_id == msg_id && s.sig == sig; });
+  return sig && std::any_of(sigs.cbegin(), sigs.cend(), [&](auto &s) { return s.msg_id == msg_id && s.sig_name == sig->name; });
 }
 
 void ChartView::removeIf(std::function<bool(const SigItem &s)> predicate) {
@@ -155,26 +168,36 @@ void ChartView::removeIf(std::function<bool(const SigItem &s)> predicate) {
 }
 
 void ChartView::signalUpdated(const cabana::Signal *sig) {
-  auto it = std::find_if(sigs.begin(), sigs.end(), [sig](auto &s) { return s.sig == sig; });
-  if (it != sigs.end()) {
-    if (it->series->color() != sig->color) {
-      setSeriesColor(it->series, sig->color);
+  bool found = false;
+  for (auto &s : sigs) {
+    if (sig && s.sig_name == sig->name) {
+      found = true;
+      if (auto resolved = resolveSignal(s)) {
+        if (s.series->color() != resolved->color) {
+          setSeriesColor(s.series, resolved->color);
+        }
+      }
     }
+  }
+  if (found) {
     updateTitle();
     updateSeries(sig);
   }
 }
 
 void ChartView::msgUpdated(MessageId id) {
-  if (std::any_of(sigs.cbegin(), sigs.cend(), [=](auto &s) { return s.msg_id.address == id.address; })) {
+  if (std::any_of(sigs.cbegin(), sigs.cend(), [=](auto &s) { return s.msg_id.address == id.address || can->demuxSourceId(s.msg_id) == id; })) {
     updateTitle();
+    updateSeries();
   }
 }
 
 void ChartView::manageSignals() {
   SignalSelector dlg(tr("Manage Chart"), this);
   for (auto &s : sigs) {
-    dlg.addSelected(s.msg_id, s.sig);
+    if (auto sig = resolveSignal(s)) {
+      dlg.addSelected(s.msg_id, sig);
+    }
   }
   if (dlg.exec() == QDialog::Accepted) {
     auto items = dlg.seletedItems();
@@ -182,7 +205,7 @@ void ChartView::manageSignals() {
       addSignal(s->msg_id, s->sig);
     }
     removeIf([&](auto &s) {
-      return std::none_of(items.cbegin(), items.cend(), [&](auto &it) { return s.msg_id == it->msg_id && s.sig == it->sig; });
+      return std::none_of(items.cbegin(), items.cend(), [&](auto &it) { return s.msg_id == it->msg_id && s.sig_name == it->sig->name; });
     });
   }
 }
@@ -235,10 +258,19 @@ void ChartView::updateTitle() {
   auto msgColorCss = tmp.name(QColor::HexArgb);
 
   for (auto &s : sigs) {
+    auto sig = resolveSignal(s);
     auto decoration = s.series->isVisible() ? "none" : "line-through";
+    MessageId display_id = can->demuxSourceId(s.msg_id);
+    QString display_msg = QString::fromStdString(msgName(s.msg_id));
+    QString sig_name = QString::fromStdString(sig ? sig->name : s.sig_name);
+    QString display_id_str = QString::fromStdString(display_id.toString());
+    int cycle_base = can->demuxCycleBase(s.msg_id);
+    if (cycle_base >= 0) {
+      display_id_str += QString("[%1]").arg(cycle_base);
+    }
     s.series->setName(QString("<span style=\"text-decoration:%1; color:%2\"><b>%3</b> <font color=\"%4\">%5 %6</font></span>")
-                      .arg(decoration, titleColorCss, QString::fromStdString(s.sig->name),
-                           msgColorCss, QString::fromStdString(msgName(s.msg_id)), QString::fromStdString(s.msg_id.toString())));
+                      .arg(decoration, titleColorCss, sig_name,
+                           msgColorCss, display_msg, display_id_str));
   }
   split_chart_act->setEnabled(sigs.size() > 1);
   resetChartCache();
@@ -301,20 +333,42 @@ void ChartView::appendCanEvents(const cabana::Signal *sig, const std::vector<con
 
 void ChartView::updateSeries(const cabana::Signal *sig, const MessageEventsMap *msg_new_events) {
   for (auto &s : sigs) {
-    if (!sig || s.sig == sig) {
+    if (!sig || s.sig_name == sig->name) {
+      auto resolved = resolveSignal(s);
+      if (!resolved) continue;
       if (!msg_new_events) {
         s.vals.clear();
         s.step_vals.clear();
       }
-      auto events = msg_new_events ? msg_new_events : &can->eventsMap();
-      auto it = events->find(s.msg_id);
-      if (it == events->end() || it->second.empty()) continue;
+      std::vector<const CanEvent *> virtual_new_events;
+      const std::vector<const CanEvent *> *events = nullptr;
+      if (msg_new_events) {
+        if (auto it = msg_new_events->find(s.msg_id); it != msg_new_events->end()) {
+          events = &it->second;
+        } else if (can->demuxCycleBase(s.msg_id) >= 0) {
+          auto source_it = msg_new_events->find(can->demuxSourceId(s.msg_id));
+          if (source_it != msg_new_events->end()) {
+            virtual_new_events.reserve(source_it->second.size());
+            const int repetition = can->demuxRepetition(s.msg_id);
+            const int cycle_base = can->demuxCycleBase(s.msg_id);
+            for (const CanEvent *e : source_it->second) {
+              if (e && e->size > 0 && repetition > 1 && (e->dat[0] % repetition) == cycle_base) {
+                virtual_new_events.push_back(e);
+              }
+            }
+            events = &virtual_new_events;
+          }
+        }
+      } else {
+        events = &can->events(s.msg_id);
+      }
+      if (!events || events->empty()) continue;
 
-      if (s.vals.empty() || can->toSeconds(it->second.back()->mono_time) > s.vals.back().x()) {
-        appendCanEvents(s.sig, it->second, s.vals, s.step_vals);
+      if (s.vals.empty() || can->toSeconds(events->back()->mono_time) > s.vals.back().x()) {
+        appendCanEvents(resolved, *events, s.vals, s.step_vals);
       } else {
         std::vector<QPointF> vals, step_vals;
-        appendCanEvents(s.sig, it->second, vals, step_vals);
+        appendCanEvents(resolved, *events, vals, step_vals);
         s.vals.insert(std::lower_bound(s.vals.begin(), s.vals.end(), vals.front().x(), xLessThan),
                       vals.begin(), vals.end());
         s.step_vals.insert(std::lower_bound(s.step_vals.begin(), s.step_vals.end(), step_vals.front().x(), xLessThan),
@@ -339,13 +393,19 @@ void ChartView::updateAxisY() {
 
   double min = std::numeric_limits<double>::max();
   double max = std::numeric_limits<double>::lowest();
-  QString unit = QString::fromStdString(sigs[0].sig->unit);
+  QString unit;
+  bool unit_initialized = false;
 
   for (auto &s : sigs) {
     if (!s.series->isVisible()) continue;
+    auto sig = resolveSignal(s);
+    if (!sig) continue;
 
     // Only show unit when all signals have the same unit
-    if (unit != QString::fromStdString(s.sig->unit)) {
+    if (!unit_initialized) {
+      unit = QString::fromStdString(sig->unit);
+      unit_initialized = true;
+    } else if (unit != QString::fromStdString(sig->unit)) {
       unit.clear();
     }
 
@@ -569,15 +629,16 @@ void ChartView::showTip(double sec) {
   QStringList text_list;
   for (auto &s : sigs) {
     if (s.series->isVisible()) {
+      auto sig = resolveSignal(s);
       QString value = "--";
       // use reverse iterator to find last item <= sec.
       auto it = std::lower_bound(s.vals.crbegin(), s.vals.crend(), sec, [](auto &p, double v) { return p.x() > v; });
-      if (it != s.vals.crend() && it->x() >= axis_x->min()) {
-        value = QString::fromStdString(s.sig->formatValue(it->y(), false));
+      if (sig && it != s.vals.crend() && it->x() >= axis_x->min()) {
+        value = QString::fromStdString(sig->formatValue(it->y(), false));
         s.track_pt = *it;
         x = std::max(x, chart()->mapToPosition(*it).x());
       }
-      QString name = sigs.size() > 1 ? QString::fromStdString(s.sig->name) + ": " : "";
+      QString name = sigs.size() > 1 ? QString::fromStdString(sig ? sig->name : s.sig_name) + ": " : "";
       QString min = s.min == std::numeric_limits<double>::max() ? "--" : QString::number(s.min);
       QString max = s.max == std::numeric_limits<double>::lowest() ? "--" : QString::number(s.max);
       text_list << QString("<span style=\"color:%1;\">■ </span>%2<b>%3</b> (%4, %5)")
@@ -764,9 +825,10 @@ void ChartView::drawSignalValue(QPainter *painter) {
   painter->setPen(chart()->legend()->labelColor());
   int i = 0;
   for (auto &s : sigs) {
+    auto sig = resolveSignal(s);
     auto it = std::lower_bound(s.vals.crbegin(), s.vals.crend(), cur_sec,
                                [](auto &p, double x) { return p.x() > x + EPSILON; });
-    QString value = (it != s.vals.crend() && it->x() >= axis_x->min()) ? QString::fromStdString(s.sig->formatValue(it->y())) : "--";
+    QString value = (sig && it != s.vals.crend() && it->x() >= axis_x->min()) ? QString::fromStdString(sig->formatValue(it->y())) : "--";
     QRectF marker_rect = legend_markers[i++]->sceneBoundingRect();
     QRectF value_rect(marker_rect.bottomLeft() - QPoint(0, 1), marker_rect.size());
     QString elided_val = painter->fontMetrics().elidedText(value, Qt::ElideRight, value_rect.width());
@@ -838,7 +900,8 @@ void ChartView::setSeriesType(SeriesType type) {
       s.series->deleteLater();
     }
     for (auto &s : sigs) {
-      s.series = createSeries(series_type, s.sig->color);
+      auto sig = resolveSignal(s);
+      s.series = createSeries(series_type, sig ? sig->color : s.series->color());
       const auto &points = series_type == SeriesType::StepLine ? s.step_vals : s.vals;
       s.series->replace(QVector<QPointF>(points.cbegin(), points.cend()));
     }

@@ -3,8 +3,10 @@
 #include <QObject>
 #include <memory>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "tools/cabana/dbc/dbcfile.h"
@@ -59,7 +61,13 @@ signals:
   void maskUpdated();
 
 private:
+  std::optional<std::pair<MessageId, int>> demuxSource(const MessageId &id) const;
+  cabana::Signal *ensureDemuxMultiplexor(cabana::Msg *msg, int repetition) const;
+  cabana::Signal demuxSignal(const cabana::Signal &sig, int cycle_base, int repetition) const;
+
   std::map<int, std::shared_ptr<DBCFile>> dbc_files;
+  std::unordered_map<MessageId, cabana::Msg> demux_msg_cache;
+  std::unordered_map<MessageId, int> demux_msg_cache_repetition;
 };
 
 DBCManager *dbc();

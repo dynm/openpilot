@@ -13,15 +13,36 @@ void Sparkline::update(const cabana::Signal *sig, CanEventIter first, CanEventIt
   points_.clear();
   min_val = std::numeric_limits<double>::max();
   max_val = std::numeric_limits<double>::lowest();
-  points_.reserve(std::distance(first, last));
-
+  const size_t total = std::distance(first, last);
   uint64_t start_time = (*first)->mono_time;
+  uint64_t end_time = (*std::prev(last))->mono_time;
+  double span = std::max((end_time - start_time) / 1e9, 1.0);
+  freq_ = total / span;
+
+  constexpr double kDownsampleMinHz = 50.0;
+  constexpr size_t kMaxPoints = 400;
+  const bool downsample = freq_ >= kDownsampleMinHz && total > kMaxPoints;
+  points_.reserve(downsample ? kMaxPoints : total);
+
   double value = 0.0;
-  for (auto it = first; it != last; ++it) {
-    if (sig->getValue((*it)->dat, (*it)->size, &value)) {
-      min_val = std::min(min_val, value);
-      max_val = std::max(max_val, value);
-      points_.emplace_back(((*it)->mono_time - start_time) / 1e9, value);
+  if (!downsample) {
+    for (auto it = first; it != last; ++it) {
+      if (sig->getValue((*it)->dat, (*it)->size, &value)) {
+        min_val = std::min(min_val, value);
+        max_val = std::max(max_val, value);
+        points_.emplace_back(((*it)->mono_time - start_time) / 1e9, value);
+      }
+    }
+  } else {
+    const double step = static_cast<double>(total) / static_cast<double>(kMaxPoints);
+    for (size_t i = 0; i < kMaxPoints; ++i) {
+      auto it = first + static_cast<size_t>(i * step);
+      if (it >= last) break;
+      if (sig->getValue((*it)->dat, (*it)->size, &value)) {
+        min_val = std::min(min_val, value);
+        max_val = std::max(max_val, value);
+        points_.emplace_back(((*it)->mono_time - start_time) / 1e9, value);
+      }
     }
   }
 
@@ -29,8 +50,6 @@ void Sparkline::update(const cabana::Signal *sig, CanEventIter first, CanEventIt
     pixmap = QPixmap();
     return;
   }
-
-  freq_ = points_.size() / std::max(points_.back().x() - points_.front().x(), 1.0);
   render(sig->color, range, size);
 }
 

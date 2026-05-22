@@ -82,13 +82,18 @@ public:
   inline uint64_t toMonoTime(double sec) const { return beginMonoTime() + std::max(sec, 0.0) * 1e9; }
   inline double toSeconds(uint64_t mono_time) const { return std::max(0.0, (mono_time - beginMonoTime()) / 1e9); }
 
-  inline const std::unordered_map<MessageId, CanData> &lastMessages() const { return last_msgs; }
+  inline const std::unordered_map<MessageId, CanData> &lastMessages() const { return display_last_msgs_; }
   bool isMessageActive(const MessageId &id) const;
   inline const MessageEventsMap &eventsMap() const { return events_; }
   inline const std::vector<const CanEvent *> &allEvents() const { return all_events_; }
   const CanData &lastMessage(const MessageId &id) const;
   const std::vector<const CanEvent *> &events(const MessageId &id) const;
   std::pair<CanEventIter, CanEventIter> eventsInRange(const MessageId &id, std::optional<std::pair<double, double>> time_range) const;
+  void setDemuxRepetition(const MessageId &id, int repetition);
+  int demuxRepetition(const MessageId &id) const;
+  int demuxCycleBase(const MessageId &id) const;
+  MessageId demuxSourceId(const MessageId &id) const;
+  MessageId demuxMessageId(const MessageId &id, int cycle_base) const;
 
   size_t suppressHighlighted();
   void clearSuppressed();
@@ -121,9 +126,20 @@ private:
   void updateLastMessages();
   void updateLastMsgsTo(double sec);
   void updateMasks();
+  void rebuildDemuxMessages();
+  void rebuildDemuxMessagesLocked();
+  void updateDemuxForEvent(const MessageId &id, const uint8_t *data, uint8_t size, double sec);
+  int dbcDemuxRepetition(const MessageId &source_id) const;
+  std::unordered_map<MessageId, int> activeDemuxRepetitions() const;
 
   MessageEventsMap events_;
+  MessageEventsMap virtual_events_;
   std::unordered_map<MessageId, CanData> last_msgs;
+  std::unordered_map<MessageId, CanData> virtual_last_msgs_;
+  std::unordered_map<MessageId, CanData> display_last_msgs_;
+  std::unordered_map<MessageId, int> demux_repetitions_;
+  std::unordered_map<MessageId, MessageId> demux_source_ids_;
+  std::unordered_map<MessageId, int> demux_cycle_bases_;
   std::unique_ptr<MonotonicBuffer> event_buffer_;
 
   // Members accessed in multiple threads. (mutex protected)
