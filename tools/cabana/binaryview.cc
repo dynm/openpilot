@@ -35,6 +35,7 @@ BinaryView::BinaryView(QWidget *parent) : QTableView(parent) {
   setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 
   QObject::connect(dbc(), &DBCManager::DBCFileChanged, this, &BinaryView::refresh);
+  QObject::connect(can, &AbstractStream::dataOffsetsChanged, this, &BinaryView::refresh);
   QObject::connect(UndoStack::instance(), &QUndoStack::indexChanged, this, &BinaryView::refresh);
 
   addShortcuts();
@@ -308,7 +309,7 @@ std::vector<const CanEvent *> BinaryViewModel::recentDemuxedEvents(int max_count
   auto it_current = std::upper_bound(evs.begin(), evs.end(), current_mono, CompareCanEvent());
   for (auto rit = std::make_reverse_iterator(it_current); rit != evs.rend() && (int)result.size() < max_count; ++rit) {
     const CanEvent *e = *rit;
-    if (e && e->size > 0 && (e->dat[0] % f.repetition) == f.idx) {
+    if (e && e->raw_size > 0 && (e->demuxKey() % f.repetition) == f.idx) {
       result.push_back(e);
     }
   }
@@ -416,7 +417,7 @@ const std::vector<std::array<uint32_t, 8>> &BinaryViewModel::getBitFlipChanges(s
   bool has_prev = false;
   for (auto it = first; it != last; ++it) {
     const CanEvent *event = *it;
-    if (demux_active && (event->size == 0 || (event->dat[0] % live_demux.repetition) != live_demux.idx)) continue;
+    if (demux_active && (event->raw_size == 0 || (event->demuxKey() % live_demux.repetition) != live_demux.idx)) continue;
 
     if (has_prev) {
       int size = std::min<int>(msg_size, event->size);

@@ -297,7 +297,7 @@ void ChartView::appendCanEvents(const MessageId &msg_id, const cabana::Signal *s
   const auto live_demux = can->demuxFilter(msg_id);
   double value = 0;
   for (const CanEvent *e : events) {
-    if (sig->getValue(e->dat, e->size, &value, live_demux.repetition, live_demux.idx)) {
+    if (sig->getValue(e->dat, e->size, &value, live_demux.repetition, live_demux.idx, e->demuxKey())) {
       const double ts = can->toSeconds(e->mono_time);
       vals.emplace_back(ts, value);
       if (!step_vals.empty())

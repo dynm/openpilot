@@ -20,6 +20,98 @@ AbstractStream::AbstractStream(QObject *parent) : QObject(parent) {
   QObject::connect(this, &AbstractStream::seeking, this, [this](double sec) { current_sec_ = sec; });
   QObject::connect(dbc(), &DBCManager::DBCFileChanged, this, &AbstractStream::updateMasks);
   QObject::connect(dbc(), &DBCManager::maskUpdated, this, &AbstractStream::updateMasks);
+  QObject::connect(dbc(), &DBCManager::DBCFileChanged, this, &AbstractStream::updateDataOffsets);
+  QObject::connect(dbc(), &DBCManager::msgUpdated, this, &AbstractStream::updateDataOffsets);
+  QObject::connect(dbc(), &DBCManager::msgRemoved, this, &AbstractStream::updateDataOffsets);
+}
+
+namespace {
+
+void setEventOffset(const CanEvent *event, uint8_t offset) {
+  CanEvent *e = const_cast<CanEvent *>(event);
+  offset = std::min(offset, e->raw_size);
+  const uint8_t new_size = e->raw_size - offset;
+  if (new_size < e->size) {
+    e->size = new_size;
+    e->dat = e->raw() + offset;
+  } else {
+    e->dat = e->raw() + offset;
+    e->size = new_size;
+  }
+}
+
+}  // namespace
+
+uint8_t AbstractStream::dataOffset(const MessageId &id) const {
+  auto it = data_offsets_.find(id);
+  return it != data_offsets_.end() ? it->second : 0;
+}
+
+// The reader prepends a one byte counter to each FlexRay payload; hide this byte so DBC matches actual payload
+uint8_t AbstractStream::detectDataOffset(const MessageId &id, const std::vector<const CanEvent *> &events) const {
+  if (events.empty()) return 0;
+
+  const int raw_size = events.back()->raw_size;
+  if (raw_size % 2 == 0) return 0;
+
+  if (auto msg = dbc()->msg(id)) {
+    return (msg->size > 0 && raw_size == (int)msg->size + 1) ? 1 : 0;
+  }
+
+  auto it = counter_stats_.find(id);
+  if (it == counter_stats_.end()) return 0;
+  const auto &st = it->second;
+  return (raw_size > 1 && st.odd_sizes && st.below_64 && st.varies) ? 1 : 0;
+}
+
+bool AbstractStream::setDataOffset(const MessageId &id, uint8_t offset) {
+  if (dataOffset(id) == offset) return false;
+  {
+    std::lock_guard lk(mutex_);
+    if (offset) {
+      data_offsets_[id] = offset;
+    } else {
+      data_offsets_.erase(id);
+    }
+  }
+  for (auto e : events(id)) setEventOffset(e, offset);
+  return true;
+}
+
+void AbstractStream::updateDataOffsets() {
+  std::set<MessageId> changed;
+  for (const auto &[id, evs] : events_) {
+    if (setDataOffset(id, detectDataOffset(id, evs))) changed.insert(id);
+  }
+  if (!changed.empty()) {
+    rebuildLastMessages(changed);
+    emit dataOffsetsChanged();
+  }
+}
+
+// Recompute the last-message state of ids from their stored events after their data offset changed
+void AbstractStream::rebuildLastMessages(const std::set<MessageId> &ids) {
+  const uint64_t last_ts = toMonoTime(current_sec_);
+  {
+    std::lock_guard lk(mutex_);
+    for (const auto &id : ids) {
+      const auto &ev = events(id);
+      auto it = std::upper_bound(ev.begin(), ev.end(), last_ts, CompareCanEvent());
+      if (it == ev.begin()) continue;
+
+      auto prev = std::prev(it);
+      CanData m;
+      if (auto old_m = messages_.find(id); old_m != messages_.end()) {
+        m.freq = old_m->second.freq;
+      }
+      m.compute(id, (*prev)->dat, (*prev)->size, toSeconds((*prev)->mono_time), getSpeed(), masks_[id], m.freq);
+      m.count = std::distance(ev.begin(), prev) + 1;
+      m.demux_key = (*prev)->demuxKey();
+      messages_[id] = m;
+      last_msgs[id] = m;
+    }
+  }
+  emit msgsReceived(nullptr, false);
 }
 
 void AbstractStream::updateMasks() {
@@ -124,7 +216,11 @@ void AbstractStream::setTimeRange(const std::optional<std::pair<double, double>>
 
 void AbstractStream::updateEvent(const MessageId &id, double sec, const uint8_t *data, uint8_t size) {
   std::lock_guard lk(mutex_);
-  messages_[id].compute(id, data, size, sec, getSpeed(), masks_[id]);
+  uint8_t offset = 0;
+  if (auto it = data_offsets_.find(id); it != data_offsets_.end()) offset = std::min(it->second, size);
+  auto &m = messages_[id];
+  m.compute(id, data + offset, size - offset, sec, getSpeed(), masks_[id]);
+  m.demux_key = size > 0 ? data[0] : 0;
   new_msgs_.insert(id);
 }
 
@@ -178,6 +274,7 @@ void AbstractStream::updateLastMsgsTo(double sec) {
       auto prev = std::prev(it);
       m.compute(id, (*prev)->dat, (*prev)->size, toSeconds((*prev)->mono_time), getSpeed(), {}, freq);
       m.count = std::distance(ev.begin(), prev) + 1;
+      m.demux_key = (*prev)->demuxKey();
     }
   }
 
@@ -206,8 +303,9 @@ const CanEvent *AbstractStream::newEvent(uint64_t mono_time, const cereal::CanDa
   e->src = c.getSrc();
   e->address = c.getAddress();
   e->mono_time = mono_time;
-  e->size = dat.size();
-  memcpy(e->dat, (uint8_t *)dat.begin(), e->size);
+  e->size = e->raw_size = dat.size();
+  memcpy((uint8_t *)e->raw(), (uint8_t *)dat.begin(), e->raw_size);
+  e->dat = e->raw();  // data offsets are applied in mergeEvents()
   return e;
 }
 
@@ -221,16 +319,37 @@ void AbstractStream::mergeEvents(const std::vector<const CanEvent *> &events) {
   }
 
   if (!events.empty()) {
+    std::set<MessageId> offset_changed;
     for (const auto &[id, new_e] : msg_events) {
       if (!new_e.empty()) {
         auto &e = events_[id];
         auto pos = std::upper_bound(e.cbegin(), e.cend(), new_e.front()->mono_time, CompareCanEvent());
         e.insert(pos, new_e.cbegin(), new_e.cend());
+
+        auto &st = counter_stats_[id];
+        for (auto ev : new_e) {
+          if (ev->raw_size % 2 == 0) st.odd_sizes = false;
+          if (ev->raw_size == 0) continue;
+          const int key = ev->demuxKey();
+          if (key >= 64) st.below_64 = false;
+          if (st.first_value < 0) st.first_value = key;
+          else if (key != st.first_value) st.varies = true;
+        }
+
+        if (setDataOffset(id, detectDataOffset(id, e))) {
+          offset_changed.insert(id);
+        } else if (uint8_t offset = dataOffset(id)) {
+          for (auto ev : new_e) setEventOffset(ev, offset);
+        }
       }
     }
     auto pos = std::upper_bound(all_events_.cbegin(), all_events_.cend(), events.front()->mono_time, CompareCanEvent());
     all_events_.insert(pos, events.cbegin(), events.cend());
     emit eventsMerged(msg_events);
+    if (!offset_changed.empty()) {
+      rebuildLastMessages(offset_changed);
+      emit dataOffsetsChanged();
+    }
   }
 }
 

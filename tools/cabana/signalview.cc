@@ -624,7 +624,7 @@ void SignalView::updateState(const std::set<MessageId> *msgs) {
   const auto live_demux = can->demuxFilter(model->msg_id);
   for (auto item : model->root->children) {
     double value = 0;
-    if (item->sig->getValue(last_msg.dat.data(), last_msg.dat.size(), &value, live_demux.repetition, live_demux.idx)) {
+    if (item->sig->getValue(last_msg.dat.data(), last_msg.dat.size(), &value, live_demux.repetition, live_demux.idx, last_msg.demux_key)) {
       item->sig_val = item->sig->formatValue(value);
       max_value_width = std::max(max_value_width, fontMetrics().horizontalAdvance(item->sig_val));
     }

@@ -209,11 +209,11 @@ const std::vector<uint8_t> &MessageListModel::demuxBytes(const Item &item) const
     static const std::vector<uint8_t> empty_data;
     return empty_data;
   }
-  const int last_cycle = lastMsg.dat[0];
+  const int last_cycle = lastMsg.demux_key;
   const int block_base = last_cycle - (last_cycle % repetition);
   const int desired_cycle = block_base + item.cycle_base;
 
-  if (lastMsg.dat[0] == desired_cycle) {
+  if (lastMsg.demux_key == desired_cycle) {
     return lastMsg.dat;
   }
 
@@ -225,8 +225,8 @@ const std::vector<uint8_t> &MessageListModel::demuxBytes(const Item &item) const
   // search within the current demux block
   for (auto rit = std::make_reverse_iterator(it_current); rit != evs.rend(); ++rit) {
     const CanEvent *e = *rit;
-    if (!e || e->size == 0) continue;
-    const int cyc = e->dat[0];
+    if (!e || e->raw_size == 0) continue;
+    const int cyc = e->demuxKey();
     const int cyc_base = cyc - (cyc % repetition);
     if (cyc_base < block_base) break;  // left this block
     if (cyc == desired_cycle) {
@@ -242,7 +242,7 @@ const std::vector<uint8_t> &MessageListModel::demuxBytes(const Item &item) const
     int older_cycle = desired_cycle - step * repetition;
     for (auto rit = std::make_reverse_iterator(it_current); rit != evs.rend(); ++rit) {
       const CanEvent *e = *rit;
-      if (e && e->size > 0 && e->dat[0] == older_cycle) {
+      if (e && e->raw_size > 0 && e->demuxKey() == older_cycle) {
         uint64_t key = makeDemuxKey(item);
         auto &dst = demux_bytes_cache_[key];
         dst.assign(e->dat, e->dat + e->size);
@@ -356,7 +356,7 @@ QVariant MessageListModel::data(const QModelIndex &index, int role) const {
         const auto &evs = can->events(item.id);
         uint32_t cnt = 0;
         for (const auto *e : evs) {
-          if (e && e->size > 0 && (e->dat[0] % repetition) == item.cycle_base) ++cnt;
+          if (e && e->raw_size > 0 && (e->demuxKey() % repetition) == item.cycle_base) ++cnt;
         }
         return QString::number(cnt);
       }

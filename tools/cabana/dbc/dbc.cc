@@ -159,7 +159,7 @@ QString cabana::Signal::formatValue(double value, bool with_unit) const {
   return val_str;
 }
 
-bool cabana::Signal::getValue(const uint8_t *data, size_t data_size, double *val, int live_demux_repetition, int live_demux_idx) const {
+bool cabana::Signal::getValue(const uint8_t *data, size_t data_size, double *val, int live_demux_repetition, int live_demux_idx, int demux_key) const {
   if (multiplexor && get_raw_value(data, data_size, *multiplexor) != multiplex_value) {
     return false;
   }
@@ -170,7 +170,11 @@ bool cabana::Signal::getValue(const uint8_t *data, size_t data_size, double *val
     idx = live_demux_idx;
   }
   if (idx >= 0 && rep > 1) {
-    if (data_size == 0 || (data[0] % rep) != idx) {
+    if (demux_key < 0) {
+      if (data_size == 0) return false;
+      demux_key = data[0];
+    }
+    if ((demux_key % rep) != idx) {
       return false;
     }
   }

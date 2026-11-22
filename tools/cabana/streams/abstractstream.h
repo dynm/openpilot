@@ -25,6 +25,7 @@ struct CanData {
 
   double ts = 0.;
   uint32_t count = 0;
+  uint8_t demux_key = 0;
   double freq = 0;
   std::vector<uint8_t> dat;
   std::vector<QColor> colors;
@@ -45,7 +46,11 @@ struct CanEvent {
   uint32_t address;
   uint64_t mono_time;
   uint8_t size;
-  uint8_t dat[];
+  uint8_t raw_size;
+  const uint8_t *dat;
+
+  inline const uint8_t *raw() const { return reinterpret_cast<const uint8_t *>(this + 1); }
+  inline uint8_t demuxKey() const { return raw_size > 0 ? raw()[0] : 0; }
 };
 
 struct DemuxFilter {
@@ -102,6 +107,8 @@ public:
   void setDemuxFilter(const MessageId &id, int repetition, int idx);
   DemuxFilter demuxFilter(const MessageId &id) const;
 
+  uint8_t dataOffset(const MessageId &id) const;
+
 signals:
   void paused();
   void resume();
@@ -113,6 +120,7 @@ signals:
   void sourcesUpdated(const SourceSet &s);
   void privateUpdateLastMsgsSignal();
   void demuxFilterChanged(const MessageId &id);
+  void dataOffsetsChanged();
 
 public:
   SourceSet sources;
@@ -130,10 +138,22 @@ private:
   void updateLastMessages();
   void updateLastMsgsTo(double sec);
   void updateMasks();
+  void updateDataOffsets();
+  uint8_t detectDataOffset(const MessageId &id, const std::vector<const CanEvent *> &events) const;
+  bool setDataOffset(const MessageId &id, uint8_t offset);
+  void rebuildLastMessages(const std::set<MessageId> &ids);
 
   MessageEventsMap events_;
   std::unordered_map<MessageId, CanData> last_msgs;
   std::unordered_map<MessageId, DemuxFilter> demux_filters_;
+  std::unordered_map<MessageId, uint8_t> data_offsets_;
+  struct CounterStats { // of first raw byte to recognize a FlexRay cycle counter
+    bool odd_sizes = true;
+    bool below_64 = true;
+    bool varies = false;
+    int first_value = -1;
+  };
+  std::unordered_map<MessageId, CounterStats> counter_stats_;
   std::unique_ptr<MonotonicBuffer> event_buffer_;
 
   // Members accessed in multiple threads. (mutex protected)
