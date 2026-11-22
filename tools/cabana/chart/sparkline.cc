@@ -4,7 +4,7 @@
 #include <limits>
 #include <QPainter>
 
-void Sparkline::update(const cabana::Signal *sig, CanEventIter first, CanEventIter last, int range, QSize size) {
+void Sparkline::update(const cabana::Signal *sig, CanEventIter first, CanEventIter last, int range, QSize size, DemuxFilter live_demux) {
   if (first == last || size.isEmpty()) {
     pixmap = QPixmap();
     return;
@@ -22,7 +22,7 @@ void Sparkline::update(const cabana::Signal *sig, CanEventIter first, CanEventIt
   double value = 0.0;
   if (total <= kMaxPoints) {
     for (auto it = first; it != last; ++it) {
-      if (sig->getValue((*it)->dat, (*it)->size, &value)) {
+      if (sig->getValue((*it)->dat, (*it)->size, &value, live_demux.repetition, live_demux.idx)) {
         min_val = std::min(min_val, value);
         max_val = std::max(max_val, value);
         points_.emplace_back(((*it)->mono_time - start_time) / 1e9, value);
@@ -33,7 +33,7 @@ void Sparkline::update(const cabana::Signal *sig, CanEventIter first, CanEventIt
     for (size_t i = 0; i < kMaxPoints; ++i) {
       auto it = first + static_cast<size_t>(i * step);
       if (it >= last) break;
-      if (sig->getValue((*it)->dat, (*it)->size, &value)) {
+      if (sig->getValue((*it)->dat, (*it)->size, &value, live_demux.repetition, live_demux.idx)) {
         min_val = std::min(min_val, value);
         max_val = std::max(max_val, value);
         points_.emplace_back(((*it)->mono_time - start_time) / 1e9, value);

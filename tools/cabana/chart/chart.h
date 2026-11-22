@@ -63,9 +63,10 @@ private slots:
   void msgUpdated(MessageId id);
   void msgRemoved(MessageId id) { removeIf([=](auto &s) { return s.msg_id.address == id.address && !dbc()->msg(id); }); }
   void signalRemoved(const cabana::Signal *sig) { removeIf([=](auto &s) { return s.sig == sig; }); }
+  void demuxFilterChanged(const MessageId &id);
 
 private:
-  void appendCanEvents(const cabana::Signal *sig, const std::vector<const CanEvent *> &events,
+  void appendCanEvents(const MessageId &msg_id, const cabana::Signal *sig, const std::vector<const CanEvent *> &events,
                        std::vector<QPointF> &vals, std::vector<QPointF> &step_vals);
   void createToolButtons();
   void addSeries(QXYSeries *series);

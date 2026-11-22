@@ -56,6 +56,7 @@ ChartView::ChartView(const std::pair<double, double> &x_range, ChartsWidget *par
   QObject::connect(dbc(), &DBCManager::signalUpdated, this, &ChartView::signalUpdated);
   QObject::connect(dbc(), &DBCManager::msgRemoved, this, &ChartView::msgRemoved);
   QObject::connect(dbc(), &DBCManager::msgUpdated, this, &ChartView::msgUpdated);
+  QObject::connect(can, &AbstractStream::demuxFilterChanged, this, &ChartView::demuxFilterChanged);
 }
 
 void ChartView::createToolButtons() {
@@ -171,6 +172,12 @@ void ChartView::msgUpdated(MessageId id) {
   }
 }
 
+void ChartView::demuxFilterChanged(const MessageId &id) {
+  for (auto &s : sigs) {
+    if (s.msg_id == id) updateSeries(s.sig);
+  }
+}
+
 void ChartView::manageSignals() {
   SignalSelector dlg(tr("Manage Chart"), this);
   for (auto &s : sigs) {
@@ -282,14 +289,15 @@ void ChartView::updateSeriesPoints() {
   }
 }
 
-void ChartView::appendCanEvents(const cabana::Signal *sig, const std::vector<const CanEvent *> &events,
+void ChartView::appendCanEvents(const MessageId &msg_id, const cabana::Signal *sig, const std::vector<const CanEvent *> &events,
                                 std::vector<QPointF> &vals, std::vector<QPointF> &step_vals) {
   vals.reserve(vals.size() + events.capacity());
   step_vals.reserve(step_vals.size() + events.capacity() * 2);
 
+  const auto live_demux = can->demuxFilter(msg_id);
   double value = 0;
   for (const CanEvent *e : events) {
-    if (sig->getValue(e->dat, e->size, &value)) {
+    if (sig->getValue(e->dat, e->size, &value, live_demux.repetition, live_demux.idx)) {
       const double ts = can->toSeconds(e->mono_time);
       vals.emplace_back(ts, value);
       if (!step_vals.empty())
@@ -311,10 +319,10 @@ void ChartView::updateSeries(const cabana::Signal *sig, const MessageEventsMap *
       if (it == events->end() || it->second.empty()) continue;
 
       if (s.vals.empty() || can->toSeconds(it->second.back()->mono_time) > s.vals.back().x()) {
-        appendCanEvents(s.sig, it->second, s.vals, s.step_vals);
+        appendCanEvents(s.msg_id, s.sig, it->second, s.vals, s.step_vals);
       } else {
         std::vector<QPointF> vals, step_vals;
-        appendCanEvents(s.sig, it->second, vals, step_vals);
+        appendCanEvents(s.msg_id, s.sig, it->second, vals, step_vals);
         s.vals.insert(std::lower_bound(s.vals.begin(), s.vals.end(), vals.front().x(), xLessThan),
                       vals.begin(), vals.end());
         s.step_vals.insert(std::lower_bound(s.step_vals.begin(), s.step_vals.end(), step_vals.front().x(), xLessThan),

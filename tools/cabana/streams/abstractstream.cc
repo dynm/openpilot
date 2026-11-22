@@ -73,6 +73,19 @@ void AbstractStream::clearSuppressed() {
   }
 }
 
+void AbstractStream::setDemuxFilter(const MessageId &id, int repetition, int idx) {
+  DemuxFilter f;
+  f.repetition = std::max(1, repetition);
+  f.idx = (idx >= 0 && f.repetition > 1) ? std::clamp(idx, 0, f.repetition - 1) : -1;
+  demux_filters_[id] = f;
+  emit demuxFilterChanged(id);
+}
+
+DemuxFilter AbstractStream::demuxFilter(const MessageId &id) const {
+  auto it = demux_filters_.find(id);
+  return it != demux_filters_.end() ? it->second : DemuxFilter{};
+}
+
 void AbstractStream::updateLastMessages() {
   auto prev_src_size = sources.size();
   auto prev_msg_size = last_msgs.size();

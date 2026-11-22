@@ -480,6 +480,9 @@ SignalView::SignalView(ChartsWidget *charts, QWidget *parent) : charts(charts), 
   QObject::connect(tree->verticalScrollBar(), &QScrollBar::valueChanged, [this]() { updateState(); });
   QObject::connect(tree->verticalScrollBar(), &QScrollBar::rangeChanged, [this]() { updateState(); });
   QObject::connect(can, &AbstractStream::msgsReceived, this, &SignalView::updateState);
+  QObject::connect(can, &AbstractStream::demuxFilterChanged, this, [this](const MessageId &id) {
+    if (id == model->msg_id) updateState();
+  });
   QObject::connect(tree->header(), &QHeaderView::sectionResized, [this](int logicalIndex, int oldSize, int newSize) {
     if (logicalIndex == 1) {
       value_column_width = newSize;
@@ -618,9 +621,10 @@ void SignalView::updateState(const std::set<MessageId> *msgs) {
   const auto &last_msg = can->lastMessage(model->msg_id);
   if (model->rowCount() == 0 || (msgs && !msgs->count(model->msg_id)) || last_msg.dat.size() == 0) return;
 
+  const auto live_demux = can->demuxFilter(model->msg_id);
   for (auto item : model->root->children) {
     double value = 0;
-    if (item->sig->getValue(last_msg.dat.data(), last_msg.dat.size(), &value)) {
+    if (item->sig->getValue(last_msg.dat.data(), last_msg.dat.size(), &value, live_demux.repetition, live_demux.idx)) {
       item->sig_val = item->sig->formatValue(value);
       max_value_width = std::max(max_value_width, fontMetrics().horizontalAdvance(item->sig_val));
     }
@@ -634,12 +638,15 @@ void SignalView::updateState(const std::set<MessageId> *msgs) {
     QSize size(available_width - value_width,
                delegate->button_size.height() - style()->pixelMetric(QStyle::PM_FocusFrameVMargin) * 2);
 
-    auto [first, last] = can->eventsInRange(model->msg_id, std::make_pair(last_msg.ts -settings.sparkline_range, last_msg.ts));
+    auto event_range = can->eventsInRange(model->msg_id, std::make_pair(last_msg.ts -settings.sparkline_range, last_msg.ts));
+    CanEventIter first = event_range.first, last = event_range.second;
+    int sparkline_range = settings.sparkline_range;
     QFutureSynchronizer<void> synchronizer;
     for (int i = first_visible.row(); i <= last_visible.row(); ++i) {
       auto item = model->getItem(model->index(i, 1));
-      synchronizer.addFuture(QtConcurrent::run(
-          &item->sparkline, &Sparkline::update, item->sig, first, last, settings.sparkline_range, size));
+      synchronizer.addFuture(QtConcurrent::run([item, first, last, sparkline_range, size, live_demux]() {
+        item->sparkline.update(item->sig, first, last, sparkline_range, size, live_demux);
+      }));
     }
     synchronizer.waitForFinished();
   }

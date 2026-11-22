@@ -142,7 +142,10 @@ void BinaryView::mousePressEvent(QMouseEvent *event) {
     anchor_index = index;
     auto item = (const BinaryViewModel::Item *)anchor_index.internalPointer();
     int bit_pos = get_bit_pos(anchor_index);
+    const auto live_demux = can->demuxFilter(model->msg_id);
     for (auto s : item->sigs) {
+      if (s->demux_repetition != live_demux.repetition || s->demux_idx != live_demux.idx)
+        continue;
       if (bit_pos == s->lsb || bit_pos == s->msb) {
         int idx = flipBitPos(bit_pos == s->lsb ? s->msb : s->lsb);
         anchor_index = model->index(idx / 8, idx % 8);
@@ -175,6 +178,11 @@ void BinaryView::mouseReleaseEvent(QMouseEvent *event) {
     if (selectionModel()->hasSelection()) {
       auto sig = resize_sig ? *resize_sig : cabana::Signal{};
       std::tie(sig.start_bit, sig.size, sig.is_little_endian) = getSelection(release_index);
+      if (!resize_sig) {
+        const auto live_demux = can->demuxFilter(model->msg_id);
+        sig.demux_repetition = live_demux.repetition;
+        sig.demux_idx = live_demux.idx;
+      }
       resize_sig ? emit editSignal(resize_sig, sig)
                  : UndoStack::push(new AddSigCommand(model->msg_id, sig));
     } else {
@@ -290,38 +298,40 @@ void BinaryViewModel::updateItem(int row, int col, uint8_t val, const QColor &co
   }
 }
 
+std::vector<const CanEvent *> BinaryViewModel::recentDemuxedEvents(int max_count) const {
+  std::vector<const CanEvent *> result;
+  const auto f = can->demuxFilter(msg_id);
+  if (f.idx < 0 || f.repetition <= 1) return result;
+
+  const auto &evs = can->events(msg_id);
+  const uint64_t current_mono = can->toMonoTime(can->currentSec());
+  auto it_current = std::upper_bound(evs.begin(), evs.end(), current_mono, CompareCanEvent());
+  for (auto rit = std::make_reverse_iterator(it_current); rit != evs.rend() && (int)result.size() < max_count; ++rit) {
+    const CanEvent *e = *rit;
+    if (e && e->size > 0 && (e->dat[0] % f.repetition) == f.idx) {
+      result.push_back(e);
+    }
+  }
+  return result;
+}
+
 void BinaryViewModel::updateState() {
   const auto &last_msg = can->lastMessage(msg_id);
+  const auto live_demux = can->demuxFilter(msg_id);
+  const bool demux_active = live_demux.idx >= 0 && live_demux.repetition > 1 && !last_msg.dat.empty();
+
   // Demux filter for Bit View only
-  std::vector<uint8_t> demuxed;
+  std::vector<uint8_t> demuxed, demux_prev;
   const std::vector<uint8_t> *binary_ptr = &last_msg.dat;
-  if (demux_cycle_base >= 0 && demux_repetition > 1 && !last_msg.dat.empty()) {
-    const int last_cycle = last_msg.dat[0];
-    const int block_base = last_cycle - (last_cycle % demux_repetition);
-    const int desired_cycle = block_base + demux_cycle_base;
-    if (last_msg.dat[0] == desired_cycle) {
-      binary_ptr = &last_msg.dat;
-    } else {
-      const auto &evs = can->events(msg_id);
-      const uint64_t current_mono = can->toMonoTime(can->currentSec());
-      auto it_current = std::upper_bound(evs.begin(), evs.end(), current_mono, CompareCanEvent());
-      bool found = false;
-      for (auto rit = std::make_reverse_iterator(it_current); rit != evs.rend(); ++rit) {
-        const CanEvent *e = *rit;
-        if (!e || e->size == 0) continue;
-        const int cyc = e->dat[0];
-        const int cyc_base = cyc - (cyc % demux_repetition);
-        if (cyc_base < block_base) break;
-        if (cyc == desired_cycle) { demuxed.assign(e->dat, e->dat + e->size); binary_ptr = &demuxed; found = true; break; }
-      }
-      if (!found) {
-        for (int step = 1; step <= 4 && !found; ++step) {
-          int older_cycle = desired_cycle - step * demux_repetition;
-          for (auto rit = std::make_reverse_iterator(it_current); rit != evs.rend(); ++rit) {
-            const CanEvent *e = *rit;
-            if (e && e->size > 0 && e->dat[0] == older_cycle) { demuxed.assign(e->dat, e->dat + e->size); binary_ptr = &demuxed; found = true; break; }
-          }
-        }
+  bool demux_has_prev = false;
+  if (demux_active) {
+    auto matches = recentDemuxedEvents(2);
+    if (!matches.empty()) {
+      demuxed.assign(matches[0]->dat, matches[0]->dat + matches[0]->size);
+      binary_ptr = &demuxed;
+      if (matches.size() > 1) {
+        demux_prev.assign(matches[1]->dat, matches[1]->dat + matches[1]->size);
+        demux_has_prev = true;
       }
     }
   }
@@ -334,7 +344,21 @@ void BinaryViewModel::updateState() {
     endInsertRows();
   }
 
-  auto &bit_flips = heatmap_live_mode ? last_msg.bit_flip_counts : getBitFlipChanges(binary.size());
+  // Color only demuxed part of signal
+  std::vector<QColor> demux_colors;
+  if (demux_active) {
+    demux_colors.assign(binary.size(), QColor(0, 0, 0, 0));
+    if (demux_has_prev) {
+      size_t n = std::min(demux_prev.size(), binary.size());
+      for (size_t i = 0; i < n; ++i) {
+        if (binary[i] != demux_prev[i]) {
+          demux_colors[i] = binary[i] > demux_prev[i] ? QColor(0, 187, 255, 200) : QColor(255, 0, 0, 200);
+        }
+      }
+    }
+  }
+  
+  const auto &bit_flips = (demux_active || !heatmap_live_mode) ? getBitFlipChanges(binary.size()) : last_msg.bit_flip_counts;
   // Find the maximum bit flip count across the message
   uint32_t max_bit_flip_count = 1;  // Default to 1 to avoid division by zero
   for (const auto &row : bit_flips) {
@@ -366,38 +390,48 @@ void BinaryViewModel::updateState() {
       color.setAlpha(alpha);
       updateItem(i, j, bit_val, color);
     }
-    const QColor &col = (i < last_msg.colors.size()) ? last_msg.colors[i] : QColor(0, 0, 0, 0);
+    const QColor &col = demux_active ? demux_colors[i] : ((i < last_msg.colors.size()) ? last_msg.colors[i] : QColor(0, 0, 0, 0));
     updateItem(i, 8, binary[i], col);
   }
 }
 
 const std::vector<std::array<uint32_t, 8>> &BinaryViewModel::getBitFlipChanges(size_t msg_size) {
-  // Return cached results if time range and data are unchanged
+  // Return cached results if time range, demux filter, and data are unchanged
   auto time_range = can->timeRange();
-  if (bit_flip_tracker.time_range == time_range && !bit_flip_tracker.flip_counts.empty())
+  const auto live_demux = can->demuxFilter(msg_id);
+  if (bit_flip_tracker.time_range == time_range && bit_flip_tracker.demux.repetition == live_demux.repetition &&
+      bit_flip_tracker.demux.idx == live_demux.idx && !bit_flip_tracker.flip_counts.empty())
     return bit_flip_tracker.flip_counts;
 
   bit_flip_tracker.time_range = time_range;
+  bit_flip_tracker.demux = live_demux;
   bit_flip_tracker.flip_counts.assign(msg_size, std::array<uint32_t, 8>{});
 
-  // Iterate over events within the specified time range and calculate bit flips
+  // Iterate over events within the specified time range and calculate multiplex-aware bit flips.
+  const bool demux_active = live_demux.idx >= 0 && live_demux.repetition > 1;
   auto [first, last] = can->eventsInRange(msg_id, time_range);
   if (std::distance(first, last) <= 1) return bit_flip_tracker.flip_counts;
 
-  std::vector<uint8_t> prev_values((*first)->dat, (*first)->dat + (*first)->size);
-  for (auto it = std::next(first); it != last; ++it) {
+  std::vector<uint8_t> prev_values;
+  bool has_prev = false;
+  for (auto it = first; it != last; ++it) {
     const CanEvent *event = *it;
-    int size = std::min<int>(msg_size, event->size);
-    for (int i = 0; i < size; ++i) {
-      const uint8_t diff = event->dat[i] ^ prev_values[i];
-      if (!diff) continue;
+    if (demux_active && (event->size == 0 || (event->dat[0] % live_demux.repetition) != live_demux.idx)) continue;
 
-      auto &bit_flips = bit_flip_tracker.flip_counts[i];
-      for (int bit = 0; bit < 8; ++bit) {
-        if (diff & (1u << bit)) ++bit_flips[7 - bit];
+    if (has_prev) {
+      int size = std::min<int>(msg_size, event->size);
+      for (int i = 0; i < size; ++i) {
+        const uint8_t diff = event->dat[i] ^ prev_values[i];
+        if (!diff) continue;
+
+        auto &bit_flips = bit_flip_tracker.flip_counts[i];
+        for (int bit = 0; bit < 8; ++bit) {
+          if (diff & (1u << bit)) ++bit_flips[7 - bit];
+        }
       }
-      prev_values[i] = event->dat[i];
     }
+    prev_values.assign(event->dat, event->dat + event->size);
+    has_prev = true;
   }
 
   return bit_flip_tracker.flip_counts;

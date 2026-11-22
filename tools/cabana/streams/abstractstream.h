@@ -48,6 +48,11 @@ struct CanEvent {
   uint8_t dat[];
 };
 
+struct DemuxFilter {
+  int repetition = 1;
+  int idx = -1;  // -1 disables filter
+};
+
 struct CompareCanEvent {
   constexpr bool operator()(const CanEvent *const e, uint64_t ts) const { return e->mono_time < ts; }
   constexpr bool operator()(uint64_t ts, const CanEvent *const e) const { return ts < e->mono_time; }
@@ -94,6 +99,9 @@ public:
   void clearSuppressed();
   void suppressDefinedSignals(bool suppress);
 
+  void setDemuxFilter(const MessageId &id, int repetition, int idx);
+  DemuxFilter demuxFilter(const MessageId &id) const;
+
 signals:
   void paused();
   void resume();
@@ -104,6 +112,7 @@ signals:
   void msgsReceived(const std::set<MessageId> *new_msgs, bool has_new_ids);
   void sourcesUpdated(const SourceSet &s);
   void privateUpdateLastMsgsSignal();
+  void demuxFilterChanged(const MessageId &id);
 
 public:
   SourceSet sources;
@@ -124,6 +133,7 @@ private:
 
   MessageEventsMap events_;
   std::unordered_map<MessageId, CanData> last_msgs;
+  std::unordered_map<MessageId, DemuxFilter> demux_filters_;
   std::unique_ptr<MonotonicBuffer> event_buffer_;
 
   // Members accessed in multiple threads. (mutex protected)

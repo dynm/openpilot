@@ -12,6 +12,10 @@
 #include "tools/cabana/signalview.h"
 #include "tools/cabana/utils/elidedlabel.h"
 
+class QCheckBox;
+class QComboBox;
+class QSpinBox;
+
 class EditMessageDialog : public QDialog {
 public:
   EditMessageDialog(const MessageId &msg_id, const QString &title, int size, QWidget *parent);
@@ -44,6 +48,7 @@ private:
   void editMsg();
   void removeMsg();
   void updateState(const std::set<MessageId> *msgs = nullptr);
+  void syncDemuxToolbar();
 
   MessageId msg_id;
   QLabel *warning_icon, *warning_label;
@@ -57,6 +62,9 @@ private:
   SignalView *signal_view;
   ChartsWidget *charts;
   QSplitter *splitter;
+  QCheckBox *demux_enable;
+  QComboBox *demux_rep;
+  QSpinBox *demux_cycle;
 };
 
 class CenterWidget : public QWidget {
