@@ -159,9 +159,24 @@ QString cabana::Signal::formatValue(double value, bool with_unit) const {
   return val_str;
 }
 
-bool cabana::Signal::getValue(const uint8_t *data, size_t data_size, double *val) const {
+bool cabana::Signal::getValue(const uint8_t *data, size_t data_size, double *val, int live_demux_repetition, int live_demux_idx, int demux_key) const {
   if (multiplexor && get_raw_value(data, data_size, *multiplexor) != multiplex_value) {
     return false;
+  }
+  // show only demuxed signal if available
+  int rep = demux_repetition, idx = demux_idx;
+  if (!(rep > 1 && idx >= 0)) {
+    rep = live_demux_repetition;
+    idx = live_demux_idx;
+  }
+  if (idx >= 0 && rep > 1) {
+    if (demux_key < 0) {
+      if (data_size == 0) return false;
+      demux_key = data[0];
+    }
+    if ((demux_key % rep) != idx) {
+      return false;
+    }
   }
   *val = get_raw_value(data, data_size, *this);
   return true;
@@ -174,7 +189,8 @@ bool cabana::Signal::operator==(const cabana::Signal &other) const {
          is_signed == other.is_signed && is_little_endian == other.is_little_endian &&
          factor == other.factor && offset == other.offset &&
          min == other.min && max == other.max && comment == other.comment && unit == other.unit && val_desc == other.val_desc &&
-         multiplex_value == other.multiplex_value && type == other.type && receiver_name == other.receiver_name;
+         multiplex_value == other.multiplex_value && type == other.type && receiver_name == other.receiver_name &&
+         demux_repetition == other.demux_repetition && demux_idx == other.demux_idx;
 }
 
 // helper functions

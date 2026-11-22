@@ -106,7 +106,7 @@ void HistoryLogModel::fetchData(std::deque<Message>::iterator insert_pos, uint64
   for (; first != events.rend() && (*first)->mono_time > min_time; ++first) {
     const CanEvent *e = *first;
     for (int i = 0; i < sigs.size(); ++i) {
-      sigs[i]->getValue(e->dat, e->size, &values[i]);
+      sigs[i]->getValue(e->dat, e->size, &values[i], 1, -1, e->demuxKey());
     }
     if (!filter_cmp || filter_cmp(values[filter_sig_idx], filter_value)) {
        msgs.emplace_back(Message{e->mono_time, values, {e->dat, e->dat + e->size}});
@@ -207,6 +207,7 @@ LogsWidget::LogsWidget(QWidget *parent) : QFrame(parent) {
   QObject::connect(value_edit, &QLineEdit::textEdited, this, &LogsWidget::filterChanged);
   QObject::connect(export_btn, &QToolButton::clicked, this, &LogsWidget::exportToCSV);
   QObject::connect(can, &AbstractStream::seekedTo, model, &HistoryLogModel::reset);
+  QObject::connect(can, &AbstractStream::dataOffsetsChanged, model, &HistoryLogModel::reset);
   QObject::connect(dbc(), &DBCManager::DBCFileChanged, model, &HistoryLogModel::reset);
   QObject::connect(UndoStack::instance(), &QUndoStack::indexChanged, model, &HistoryLogModel::reset);
   QObject::connect(model, &HistoryLogModel::modelReset, this, &LogsWidget::modelReset);

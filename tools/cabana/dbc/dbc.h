@@ -60,7 +60,7 @@ public:
   Signal() = default;
   Signal(const Signal &other) = default;
   void update();
-  bool getValue(const uint8_t *data, size_t data_size, double *val) const;
+  bool getValue(const uint8_t *data, size_t data_size, double *val, int live_demux_repetition = 1, int live_demux_idx = -1, int demux_key = -1) const;
   QString formatValue(double value, bool with_unit = true) const;
   bool operator==(const cabana::Signal &other) const;
   inline bool operator!=(const cabana::Signal &other) const { return !(*this == other); }
@@ -89,6 +89,8 @@ public:
   // Multiplexed
   int multiplex_value = 0;
   Signal *multiplexor = nullptr;
+  int demux_repetition = 1;
+  int demux_idx = -1;  // -1 disables filter
 };
 
 class Msg {

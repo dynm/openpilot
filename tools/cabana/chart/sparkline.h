@@ -9,7 +9,7 @@
 
 class Sparkline {
 public:
-  void update(const cabana::Signal *sig, CanEventIter first, CanEventIter last, int range, QSize size);
+  void update(const cabana::Signal *sig, CanEventIter first, CanEventIter last, int range, QSize size, DemuxFilter live_demux = {});
   inline double freq() const { return freq_; }
   bool isEmpty() const { return pixmap.isNull(); }
 

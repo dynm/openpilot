@@ -40,9 +40,11 @@ public:
     return (index.column() == column_count - 1) ? Qt::ItemIsEnabled : Qt::ItemIsEnabled | Qt::ItemIsSelectable;
   }
   const std::vector<std::array<uint32_t, 8>> &getBitFlipChanges(size_t msg_size);
+  std::vector<const CanEvent *> recentDemuxedEvents(int max_count) const;
 
   struct BitFlipTracker {
     std::optional<std::pair<double, double>> time_range;
+    DemuxFilter demux;
     std::vector<std::array<uint32_t, 8>> flip_counts;
   } bit_flip_tracker;
 
@@ -59,9 +61,6 @@ public:
   MessageId msg_id;
   int row_count = 0;
   const int column_count = 9;
-  // Demux filter (Bit View only)
-  int demux_cycle_base = -1; // -1 disables demux
-  int demux_repetition = 1;
 };
 
 class BinaryView : public QTableView {
@@ -79,9 +78,8 @@ public:
   }
   QSize minimumSizeHint() const override;
   void setHeatmapLiveMode(bool live) { model->heatmap_live_mode = live; updateState(); }
-  void setDemuxParams(int repetition, int cycle_base, bool enabled) {
-    model->demux_repetition = std::max(1, repetition);
-    model->demux_cycle_base = enabled ? std::clamp(cycle_base, 0, model->demux_repetition - 1) : -1;
+  void setDemuxParams(int repetition, int idx, bool enabled) {
+    can->setDemuxFilter(model->msg_id, repetition, enabled ? idx : -1);
     updateState();
   }
 

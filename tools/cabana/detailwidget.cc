@@ -7,6 +7,7 @@
 #include <QToolBar>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QSignalBlocker>
 #include <QSpinBox>
 
 #include "tools/cabana/commands.h"
@@ -60,6 +61,7 @@ DetailWidget::DetailWidget(ChartsWidget *charts, QWidget *parent) : charts(chart
   QObject::connect(tab_widget, &QTabWidget::currentChanged, [this]() { updateState(); });
   QObject::connect(can, &AbstractStream::msgsReceived, this, &DetailWidget::updateState);
   QObject::connect(dbc(), &DBCManager::DBCFileChanged, this, &DetailWidget::refresh);
+  QObject::connect(can, &AbstractStream::dataOffsetsChanged, this, &DetailWidget::refresh);
   QObject::connect(UndoStack::instance(), &QUndoStack::indexChanged, this, &DetailWidget::refresh);
   QObject::connect(tabbar, &QTabBar::customContextMenuRequested, this, &DetailWidget::showTabBarContextMenu);
   QObject::connect(tabbar, &QTabBar::currentChanged, [this](int index) {
@@ -73,6 +75,7 @@ DetailWidget::DetailWidget(ChartsWidget *charts, QWidget *parent) : charts(chart
   if (auto mw = parentWidget()->parentWidget()->findChild<MainWindow *>()) {
     QObject::connect(mw, &MainWindow::syncBitDemux, this, [this](int repetition, int idx, bool enabled){
       binary_view->setDemuxParams(repetition, idx, enabled);
+      syncDemuxToolbar();
     });
   }
 }
@@ -99,11 +102,11 @@ void DetailWidget::createToolBar() {
 
   // Bit-view demux filter (minimal UI): Enable, repetition, cycle_base
   toolbar->addSeparator();
-  auto *demux_enable = new QCheckBox(tr("Bit Demux"), this);
-  auto *demux_rep = new QComboBox(this);
+  demux_enable = new QCheckBox(tr("Bit Demux"), this);
+  demux_rep = new QComboBox(this);
   demux_rep->addItems({"1","2","4","8","16","32"});
   demux_rep->setCurrentText("1");
-  auto *demux_cycle = new QSpinBox(this);
+  demux_cycle = new QSpinBox(this);
   demux_cycle->setRange(0, 31);
   demux_cycle->setValue(0);
   toolbar->addWidget(demux_enable);
@@ -126,7 +129,7 @@ void DetailWidget::createToolBar() {
     (range ? heatmap_all : heatmap_live)->setChecked(true);
   });
 
-  auto apply_demux = [this, demux_enable, demux_rep, demux_cycle]() {
+  auto apply_demux = [this]() {
     int rep = demux_rep->currentText().toInt();
     int idx = demux_cycle->value();
     demux_cycle->setMaximum(std::max(0, rep - 1));
@@ -177,8 +180,18 @@ void DetailWidget::setMessage(const MessageId &message_id) {
   signal_view->setMessage(msg_id);
   binary_view->setMessage(msg_id);
   history_log->setMessage(msg_id);
+  syncDemuxToolbar();
   refresh();
   setUpdatesEnabled(true);
+}
+
+void DetailWidget::syncDemuxToolbar() {
+  auto f = can->demuxFilter(msg_id);
+  const QSignalBlocker b1(demux_enable), b2(demux_rep), b3(demux_cycle);
+  demux_rep->setCurrentText(QString::number(f.repetition));
+  demux_cycle->setMaximum(std::max(0, f.repetition - 1));
+  demux_cycle->setValue(std::max(0, f.idx));
+  demux_enable->setChecked(f.idx >= 0);
 }
 
 std::pair<QString, QStringList> DetailWidget::serializeMessageIds() const {
